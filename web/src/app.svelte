@@ -112,6 +112,15 @@
       if (mic) {
         record(mic);
       }
+      // The microphone keeps streaming meanwhile, so the user can cut the greeting short.
+      events?.send(
+        JSON.stringify({
+          content: "Поздоровайся сейчас по-русски одной короткой фразой и спроси, чем помочь. Потом замолчи и слушай.",
+          delegation_id: null,
+          event_id: "greeting",
+          type: "session.instructions.append",
+        }),
+      );
     }
     if (e.type === "session.input_transcript.delta") {
       you += e.delta ?? "";

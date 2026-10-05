@@ -11,12 +11,14 @@ model's own voice before building hardware around it.
 
 - Connects Chrome to `gpt-live-1` over WebRTC; a small Go server keeps the API key and creates
   sessions
-- Hands questions that need careful reasoning to a `gpt-6-luna` backend through Responses delegation
+- Greets you as soon as the session starts
+- Hands questions that need current facts or careful reasoning to a `gpt-6-luna` backend through
+  Responses delegation, with web search
 - Lets you choose the microphone and speaker, and toggle the browser's echo cancellation, noise
   suppression, and automatic gain control
 - Streams your transcript and the model's transcript side by side, so overlapping speech is visible
 - Records the microphone audio the browser sends to the model and offers it as a `.webm` download
-- Shows billed voice seconds and their cost
+- Shows billed voice seconds and their cost; backend model and web search usage is billed separately
 - Closes the session automatically after 10 minutes
 
 The interface and the assistant speak Russian.

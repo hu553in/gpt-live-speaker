@@ -23,15 +23,18 @@ Interruption policy: Stop speaking when the user interrupts. Listen to what they
 
 Delegation policy:
 Backend tools:
+- Web search: current facts such as weather, news, prices, schedules, and recent events.
 - Reasoning: think through hard questions and multi-step problems.
 
 Delegate to the backend when:
+- The answer depends on current or changing information.
 - The question needs careful reasoning or a long, precise answer.
 
 Do not delegate to the backend when:
 - You can answer from the conversation directly.`
 
-const backendPrompt = "Отвечай по-русски. Ответ будет произнесён вслух: коротко, без markdown, списков и ссылок."
+const backendPrompt = "Отвечай по-русски. Ищи в вебе, когда нужны актуальные факты. " +
+	"Ответ будет произнесён вслух: коротко, без markdown, списков и ссылок."
 
 const (
 	addr   = "127.0.0.1:3000"
@@ -57,6 +60,7 @@ func main() {
 	log.Fatal((&http.Server{ReadHeaderTimeout: readHeaderTimeout}).Serve(ln))
 }
 
+//nolint:goconst // Repeated "type" strings are JSON keys of the Live API request, not one shared value.
 func createSession(w http.ResponseWriter, r *http.Request) {
 	// Stops other websites from opening paid sessions through this localhost server.
 	if r.Header.Get("Origin") != origin {
@@ -69,8 +73,12 @@ func createSession(w http.ResponseWriter, r *http.Request) {
 			"model":        "gpt-live-1",
 			"instructions": voicePrompt,
 			"delegation": map[string]any{
-				"type":      "responses",
-				"responses": map[string]any{"model": "gpt-6-luna", "instructions": backendPrompt},
+				"type": "responses",
+				"responses": map[string]any{
+					"model":        "gpt-6-luna",
+					"instructions": backendPrompt,
+					"tools":        []map[string]any{{"type": "web_search"}},
+				},
 			},
 		},
 		"transport": map[string]any{"type": "webrtc", "sdp": string(sdp)},

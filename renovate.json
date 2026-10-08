@@ -2,16 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "github>hu553in/common-things//presets/renovate/go",
-    "github>hu553in/common-things//presets/renovate/bun"
+    "github>hu553in/common-things//presets/renovate/python"
   ],
-  "enabledManagers": ["bun", "custom.regex", "github-actions", "gomod"],
-  "packageRules": [
-    {
-      "description": "Disable automatic TypeScript major updates",
-      "matchManagers": ["bun"],
-      "matchPackageNames": ["typescript"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
-    }
-  ]
+  "enabledManagers": ["custom.regex", "github-actions", "gomod", "pep621"]
 }

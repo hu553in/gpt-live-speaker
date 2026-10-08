@@ -5,7 +5,9 @@ Thumbs.db
 !.env.example
 !.env.example.*
 dist/
-node_modules/
+.venv/
+.ruff_cache/
+__pycache__/
 .vscode/
 .idea/
 *.iml

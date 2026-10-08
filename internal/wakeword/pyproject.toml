@@ -1,0 +1,54 @@
+[project]
+name = "gpt-live-speaker-wakeword"
+version = "0.1.0"
+description = "Wake word detector that the GPT-Live speaker daemon runs as a child process."
+authors = [{ name = "Ruslan Khasanshin" }]
+requires-python = ">=3.14"
+
+dependencies = ["pymicro-wakeword>=2.5.0"]
+
+[project.urls]
+Repository = "https://github.com/hu553in/gpt-live-speaker"
+
+[dependency-groups]
+dev = ["deptry>=0.25.1", "pysentry-rs>=0.5.0", "ruff>=0.16.10", "ty>=0.0.85"]
+
+[tool.uv]
+package = false
+link-mode = "copy"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "UP",
+  "B",
+  "SIM",
+  "ARG",
+  "PL",
+  "RUF",
+  "C4",
+  "FA",
+  "N",
+  "PERF",
+  "W",
+  "PGH004",
+  "T10",
+]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
+[tool.pysentry.defaults]
+fail_on = "low"
+
+[tool.pysentry.sources]
+enabled = ["pypa", "pypi", "osv"]

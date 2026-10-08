@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := check
 
 BUILD_DIR ?= ./dist
+WAKEWORD := internal/wakeword
 
 PRETTIER := bunx prettier -u
 ACTIONLINT := bunx github-actionlint
@@ -24,7 +25,7 @@ check-hooks:
 	$(PREK) validate-config prek.toml
 
 .PHONY: check
-check: lint check-hooks build check-deps check-vulns test check-web check-renovate check-workflows
+check: lint check-hooks check-types build check-deps check-vulns test check-renovate check-workflows
 
 .PHONY: check-fix
 check-fix: lint-fix
@@ -33,55 +34,56 @@ check-fix: lint-fix
 .PHONY: install-deps
 install-deps:
 	go mod download
-	cd web && bun ci
-
-# main.go embeds web/dist, so Go builds and linters need the frontend build first.
-.PHONY: build-web
-build-web: install-deps
-	cd web && bun run build
+	uv sync --directory "$(WAKEWORD)" --all-groups --locked
 
 .PHONY: lint
-lint: build-web
-	$(PRETTIER) -c . '!web/**'
+lint: install-deps
+	$(PRETTIER) -c .
 	$(TAPLO) fmt --check
 	golangci-lint fmt --diff
 	golangci-lint run
-	cd web && bun lint
+	uv run --directory "$(WAKEWORD)" ruff check
+	uv run --directory "$(WAKEWORD)" ruff format --check
 
 .PHONY: lint-fix
-lint-fix: build-web
-	$(PRETTIER) -w . '!web/**'
+lint-fix: install-deps
+	$(PRETTIER) -w .
 	$(TAPLO) fmt
 	golangci-lint fmt
 	golangci-lint run --fix
-	cd web && bun lint:fix
+	uv run --directory "$(WAKEWORD)" ruff check --fix
+	uv run --directory "$(WAKEWORD)" ruff format
 
-.PHONY: check-web
-check-web: install-deps
-	cd web && bun check:types && bun check:unused && bun check:vulns
+.PHONY: check-types
+check-types: install-deps
+	uv run --directory "$(WAKEWORD)" ty check
 
 .PHONY: check-deps
 check-deps: install-deps
 	go mod tidy -diff
 	go mod verify
+	uv lock --directory "$(WAKEWORD)" --check
+	uv run --directory "$(WAKEWORD)" deptry .
 
 .PHONY: check-vulns
-check-vulns: build-web
+check-vulns: install-deps
 	go tool govulncheck ./...
+	uv run --directory "$(WAKEWORD)" pysentry-rs .
 
 .PHONY: test
-test: build-web
+test: install-deps
 	go test -race ./...
 
+# malgo binds the system audio APIs through cgo.
 .PHONY: build
-build: ensure-build-dir build-web
-	CGO_ENABLED=0 GOFLAGS="-buildvcs=false" \
-	go build -trimpath -ldflags="-s -w" -o "$(BUILD_DIR)/gpt-live-speaker" .
+build: ensure-build-dir install-deps
+	CGO_ENABLED=1 GOFLAGS="-buildvcs=false" \
+	go build -trimpath -ldflags="-s -w" -o "$(BUILD_DIR)/gpt-live-speaker" ./cmd/gpt-live-speaker
 
 .PHONY: run
-run: build-web
-	set -a && . ./.env && go run .
+run:
+	set -a && . ./.env && go run ./cmd/gpt-live-speaker
 
 .PHONY: clean
 clean:
-	rm -rf -- "$(BUILD_DIR)" web/dist
+	rm -rf -- "$(BUILD_DIR)"

@@ -131,6 +131,7 @@ func TestConverseStartsStreamsAndClosesGracefullyOnStop(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("converse: %v", err)
 	}
+	s.finalizing.Wait()
 	if err := <-serverErr; err != nil {
 		t.Fatalf("server: %v", err)
 	}
@@ -150,6 +151,7 @@ func TestConverseEndsWhenTheServerClosesTheSession(t *testing.T) {
 	if err := s.converse(t.Context(), nil); err != nil {
 		t.Fatalf("converse: %v", err)
 	}
+	s.finalizing.Wait()
 	if err := <-serverErr; err != nil {
 		t.Fatalf("server: %v", err)
 	}
@@ -203,9 +205,10 @@ func TestConverseHangsUpWhenTheBackendEndsTheConversation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("converse: %v", err)
 		}
-	case <-time.After(goodbyeLimit + 5*time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("the session stayed open after end_conversation")
 	}
+	s.finalizing.Wait()
 	if err := <-serverErr; err != nil {
 		t.Fatalf("server: %v", err)
 	}
@@ -225,5 +228,76 @@ func TestSessionConfigTellsBothModelsTheTimeAndPlace(t *testing.T) {
 				t.Errorf("%s instructions lack %q", name, want)
 			}
 		}
+	}
+}
+
+func TestMicIsCutOffAfterTheGoodbye(t *testing.T) {
+	// conn is nil: any attempt to send the microphone to the model would panic.
+	c := &conversation{speaker: &speaker{}, started: true, goodbye: true}
+
+	if err := c.onMic(t.Context(), make([]byte, audio.CaptureRate/10*audio.BytesPerSample)); err != nil {
+		t.Fatalf("onMic after the goodbye: %v", err)
+	}
+}
+
+func TestRejectedStartFailsFastAndForgetsTheHistory(t *testing.T) {
+	s, _ := fakeLive(t, func(ctx context.Context, conn *websocket.Conn) error {
+		if _, err := expect(ctx, conn, "session.start"); err != nil {
+			return err
+		}
+		err := wsjson.Write(ctx, conn, map[string]any{
+			"type": "error", "error": map[string]any{"message": "input exceeds the limit"},
+		})
+		if err != nil {
+			return err
+		}
+		_, err = expect(ctx, conn, "never sent")
+		return err
+	})
+	s.history.add(roleUser, "a history OpenAI refuses", time.Now())
+
+	started := time.Now()
+	err := s.converse(t.Context(), nil)
+
+	if !errors.Is(err, errSessionRejected) || !strings.Contains(err.Error(), "input exceeds the limit") {
+		t.Fatalf("converse error = %v, want the rejection with its message", err)
+	}
+	if waited := time.Since(started); waited > startTimeout/2 {
+		t.Fatalf("converse waited %v for a session OpenAI had already rejected", waited)
+	}
+	if got := s.history.startInput(time.Now()); len(got) != 0 {
+		t.Fatalf("history after a rejected start = %+v, want it forgotten", got)
+	}
+}
+
+func TestHistoryFollowsTheTimelineNotTheArrivalOrder(t *testing.T) {
+	s, serverErr := fakeLive(t, func(ctx context.Context, conn *websocket.Conn) error {
+		if _, err := expect(ctx, conn, "session.start"); err != nil {
+			return err
+		}
+		for _, ev := range []map[string]any{
+			{"type": "session.started"},
+			// The reply is transcribed first, although the user spoke before it.
+			{"type": "session.output_transcript.delta", "delta": "Пока!", "start_ms": 2000},
+			{"type": "session.input_transcript.delta", "delta": "пока", "start_ms": 1500},
+			{"type": "session.closed", "reason": "remote_hangup"},
+		} {
+			if err := wsjson.Write(ctx, conn, ev); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err := s.converse(t.Context(), nil); err != nil {
+		t.Fatalf("converse: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server: %v", err)
+	}
+
+	got := s.history.startInput(time.Now())
+	if len(got) != 2 || got[0].Role != roleUser || got[1].Role != roleAssistant {
+		t.Fatalf("history = %+v, want the user's words before the reply", got)
 	}
 }

@@ -88,6 +88,10 @@ Durations use Go syntax, such as `90s` or `5m`.
    session closes after `IDLE_TIMEOUT`. Either way the speaker listens for the wake word again.
 4. Press Ctrl+C to quit. A running session closes first, so it stops billing.
 
+Each line of the conversation log has `at`, the moment it was said, counted from the start of the
+session. Your words are transcribed with a delay, so they can appear after the reply; `at` shows the
+real order.
+
 ## Troubleshooting
 
 - **The wake word does not trigger:** the pretrained models are trained for English and score real

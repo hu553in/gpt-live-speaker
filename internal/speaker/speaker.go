@@ -5,6 +5,7 @@ package speaker
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -13,12 +14,8 @@ import (
 	"gpt-live-speaker/internal/wakeword"
 )
 
-const (
-	// The detector prints several hits per utterance, and the room can echo the last answer.
-	wakeCooldown = 2 * time.Second
-	// A request said in the same breath as the wake word starts before detection finishes.
-	prerollBytes = audio.CaptureRate * audio.BytesPerSample
-)
+// A request said in the same breath as the wake word starts before detection finishes.
+const prerollBytes = audio.CaptureRate * audio.BytesPerSample
 
 type speaker struct {
 	logger       *slog.Logger
@@ -33,8 +30,8 @@ type speaker struct {
 	liveMic      <-chan []byte
 	dropped      *atomic.Int64
 	history      history
-	// quietUntil ignores wake word hits right after a session.
-	quietUntil time.Time
+	// finalizing tracks closed sessions still waiting for OpenAI to confirm the close.
+	finalizing sync.WaitGroup
 }
 
 // Run listens for the wake word and holds conversations until ctx is cancelled.
@@ -60,6 +57,8 @@ func Run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
 		dropped:      &atomic.Int64{},
 		history:      history{ttl: cfg.HistoryTTL},
 	}
+	// Quitting waits for every close confirmation, so no session keeps billing after Ctrl+C.
+	defer s.finalizing.Wait()
 	dev, err := audio.Open(cfg.AudioDevice, wakeMic, liveMic, s.out, s.dropped)
 	if err != nil {
 		return err
@@ -78,13 +77,14 @@ func Run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
 		}
 		logger.InfoContext(ctx, "wake word heard, connecting")
 		s.out.Write(audio.Beep())
+		det.Pause()
 		if sessionErr := s.converse(ctx, preroll); sessionErr != nil && ctx.Err() == nil {
 			logger.WarnContext(ctx, "session ended with an error", "error", sessionErr)
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		s.quietUntil = time.Now().Add(wakeCooldown)
+		det.Resume()
 	}
 }
 
@@ -109,9 +109,7 @@ func (s *speaker) awaitWakeWord(ctx context.Context, det *wakeword.Detector) ([]
 				preroll = preroll[extra:]
 			}
 		case <-det.Hits():
-			if time.Now().After(s.quietUntil) {
-				return preroll, nil
-			}
+			return preroll, nil
 		}
 	}
 }

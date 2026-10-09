@@ -1,11 +1,13 @@
 package speaker
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,22 +24,22 @@ const (
 
 	startTimeout = 15 * time.Second
 	closeTimeout = 15 * time.Second
-	tickInterval = time.Second
+	// tickInterval is how often the session checks its timers and whether the goodbye has played.
+	tickInterval = 250 * time.Millisecond
 
 	pricePerMinute = 0.05
-
-	// After end_conversation the goodbye still has to play out; the session closes once the
-	// speaker has been quiet this long, and no later than goodbyeLimit even if the model talks on.
-	goodbyeQuiet = time.Second
-	goodbyeLimit = 5 * time.Second
 )
+
+// errSessionRejected means OpenAI answered session.start with an error instead of session.started.
+var errSessionRejected = errors.New("GPT-Live rejected the session")
 
 // liveEvent holds the fields the speaker reads from GPT-Live server events.
 type liveEvent struct {
-	Type   string `json:"type"`
-	Delta  string `json:"delta"`
-	Reason string `json:"reason"`
-	Usage  *struct {
+	Type    string `json:"type"`
+	Delta   string `json:"delta"`
+	StartMS int64  `json:"start_ms"`
+	Reason  string `json:"reason"`
+	Usage   *struct {
 		Seconds float64 `json:"seconds"`
 	} `json:"usage"`
 	Error *struct {
@@ -71,27 +73,41 @@ type audioFormat struct {
 	Rate int    `json:"rate"`
 }
 
+// speech is transcript text from one side, placed on the session timeline. The user's words are
+// transcribed later than the reply, so arrival order is not the order things were said.
+type speech struct {
+	role  string
+	text  string
+	start time.Duration
+}
+
 // conversation is one GPT-Live session, from the wake word until the session closes.
 type conversation struct {
 	speaker *speaker
 	conn    *websocket.Conn
 	up      audio.Upsampler
 	// pending holds microphone audio captured while the session was still starting.
-	pending      [][]byte
-	line         message
+	pending [][]byte
+	// line is the stretch the log prints when the other side starts talking.
+	line speech
+	// said holds every transcript fragment; it becomes history in timeline order when the talk ends.
+	said         []speech
 	started      bool
+	goodbye      bool
 	closing      bool
 	closed       bool
 	connectedAt  time.Time
 	lastActivity time.Time
-	lastOutput   time.Time
-	goodbyeAt    time.Time
-	closingAt    time.Time
 	seconds      float64
+	// Audio path stats, taken when the conversation ends, before the next one can reuse the player.
+	playbackPeak time.Duration
+	droppedMic   int64
 }
 
 // converse runs one session. Audio captured before session.started, including the pre-roll
 // with the wake word, is sent once the session is ready, so a request said in one breath survives.
+// It returns as soon as the session is asked to close, so the speaker listens again right away;
+// waiting for OpenAI to confirm the close continues in the background.
 func (s *speaker) converse(ctx context.Context, preroll []byte) error {
 	//nolint:bodyclose // coder/websocket handles the handshake response body; callers never close it.
 	conn, _, err := websocket.Dial(ctx, s.url, &websocket.DialOptions{
@@ -100,34 +116,59 @@ func (s *speaker) converse(ctx context.Context, preroll []byte) error {
 	if err != nil {
 		return fmt.Errorf("connect to GPT-Live: %w", err)
 	}
-	defer func() { _ = conn.CloseNow() }()
 	conn.SetReadLimit(maxMessageBytes)
 
 	// Ctrl+C cancels ctx, but session.close must still reach OpenAI, or the session keeps billing.
 	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancel()
-
 	now := time.Now()
 	c := &conversation{speaker: s, conn: conn, connectedAt: now, lastActivity: now}
-	defer c.finish(sessionCtx)
-	c.pending = append(c.pending, c.up.Process(preroll))
-	if err = c.send(sessionCtx, c.startEvent(now)); err != nil {
-		return err
-	}
-
 	events := make(chan liveEvent)
 	readErr := make(chan error, 1)
 	go readEvents(sessionCtx, conn, events, readErr)
 
+	err = c.talk(ctx, sessionCtx, preroll, events, readErr)
+	c.endTalk(sessionCtx)
+	if errors.Is(err, errSessionRejected) {
+		// The history is the only part of session.start that changes between sessions, so a
+		// rejected start would repeat until it expired; start the next session fresh instead.
+		s.history.forget()
+	}
+	if err != nil || c.closed {
+		c.finish(sessionCtx)
+		cancel()
+		_ = conn.CloseNow()
+		return err
+	}
+	s.finalizing.Go(func() {
+		defer cancel()
+		defer func() { _ = conn.CloseNow() }()
+		c.awaitClosed(sessionCtx, events, readErr)
+		c.finish(sessionCtx)
+	})
+	return nil
+}
+
+// talk carries the conversation until the session is asked to close or ends on its own.
+func (c *conversation) talk(
+	ctx, sessionCtx context.Context,
+	preroll []byte,
+	events <-chan liveEvent,
+	readErr <-chan error,
+) error {
+	c.pending = append(c.pending, c.up.Process(preroll))
+	if err := c.send(sessionCtx, c.startEvent(c.connectedAt)); err != nil {
+		return err
+	}
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 	stop := ctx.Done()
-	for !c.closed {
+	for !c.closing && !c.closed {
+		var err error
 		select {
 		case <-stop:
 			stop = nil
 			err = c.onStop(sessionCtx)
-		case chunk := <-s.liveMic:
+		case chunk := <-c.speaker.liveMic:
 			err = c.onMic(sessionCtx, chunk)
 		case ev := <-events:
 			err = c.onEvent(sessionCtx, ev)
@@ -141,6 +182,38 @@ func (s *speaker) converse(ctx context.Context, preroll []byte) error {
 		}
 	}
 	return nil
+}
+
+// awaitClosed waits for OpenAI to confirm the close and reports the final usage. Late audio and
+// transcripts are dropped: the speaker may already be in the next conversation.
+func (c *conversation) awaitClosed(ctx context.Context, events <-chan liveEvent, readErr <-chan error) {
+	logger := c.speaker.logger
+	timeout := time.NewTimer(closeTimeout)
+	defer timeout.Stop()
+	for {
+		select {
+		case ev := <-events:
+			switch ev.Type {
+			case "session.usage.updated":
+				c.recordUsage(ev)
+			case "session.closed":
+				c.recordUsage(ev)
+				logger.InfoContext(ctx, "session closed", "reason", ev.Reason)
+				return
+			case "error":
+				if ev.Error != nil {
+					logger.WarnContext(ctx, "GPT-Live error", "message", ev.Error.Message)
+				}
+			}
+		case err := <-readErr:
+			logger.WarnContext(ctx, "GPT-Live connection lost before session.closed; final usage is unknown",
+				"error", err)
+			return
+		case <-timeout.C:
+			logger.WarnContext(ctx, "GPT-Live did not confirm the close; final usage is unknown")
+			return
+		}
+	}
 }
 
 func (c *conversation) startEvent(now time.Time) clientEvent {
@@ -163,7 +236,8 @@ func (c *conversation) onStop(ctx context.Context) error {
 func (c *conversation) onMic(ctx context.Context, chunk []byte) error {
 	pcm := c.up.Process(chunk)
 	switch {
-	case c.closing:
+	case c.goodbye:
+		// After the goodbye the model must not hear, and answer, anything more.
 		return nil
 	case !c.started:
 		c.pending = append(c.pending, pcm)
@@ -191,16 +265,16 @@ func (c *conversation) onEvent(ctx context.Context, ev liveEvent) error {
 			return fmt.Errorf("decode output audio: %w", err)
 		}
 		c.speaker.out.Write(pcm)
-		c.lastActivity, c.lastOutput = now, now
+		c.lastActivity = now
 	case "session.input_transcript.delta":
-		c.transcript(ctx, roleUser, ev.Delta, now)
+		c.transcript(ctx, roleUser, ev, now)
 	case "session.output_transcript.delta":
-		c.transcript(ctx, roleAssistant, ev.Delta, now)
+		c.transcript(ctx, roleAssistant, ev, now)
 	case "response.event", "session.delegation.created":
 		// Backend work counts as activity even while nobody speaks.
 		c.lastActivity = now
-		if ev.endsConversation() && c.goodbyeAt.IsZero() {
-			c.goodbyeAt = now
+		if ev.endsConversation() && !c.goodbye {
+			c.goodbye = true
 			logger.InfoContext(ctx, "the user said goodbye")
 		}
 	case "session.usage.updated":
@@ -210,21 +284,24 @@ func (c *conversation) onEvent(ctx context.Context, ev liveEvent) error {
 		c.closed = true
 		logger.InfoContext(ctx, "session closed", "reason", ev.Reason)
 	case "error":
+		message := "no details"
 		if ev.Error != nil {
-			logger.WarnContext(ctx, "GPT-Live error", "message", ev.Error.Message)
+			message = ev.Error.Message
 		}
+		if !c.started {
+			return fmt.Errorf("%w: %s", errSessionRejected, message)
+		}
+		logger.WarnContext(ctx, "GPT-Live error", "message", message)
 	}
 	return nil
 }
 
 func (c *conversation) onTick(ctx context.Context, now time.Time) error {
 	switch {
-	case c.closing && now.Sub(c.closingAt) > closeTimeout:
-		return errors.New("GPT-Live did not confirm the close; final usage is unknown")
 	case !c.started && now.Sub(c.connectedAt) > startTimeout:
 		return errors.New("GPT-Live did not start the session")
-	case !c.goodbyeAt.IsZero() && (now.Sub(c.goodbyeAt) > goodbyeLimit ||
-		c.speaker.out.Pending() == 0 && now.Sub(c.lastOutput) > goodbyeQuiet):
+	case c.goodbye && c.speaker.out.Pending() == 0:
+		// The goodbye is said before the hang-up is handed off, so it has arrived and now played.
 		return c.requestClose(ctx, "goodbye")
 	case c.started && now.Sub(c.connectedAt) > c.speaker.maxSession:
 		return c.requestClose(ctx, "maximum session length")
@@ -234,37 +311,37 @@ func (c *conversation) onTick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// requestClose sends session.close once and keeps the connection open for session.closed.
+// requestClose sends session.close once; the session stays open until OpenAI confirms it.
 func (c *conversation) requestClose(ctx context.Context, why string) error {
 	if c.closing {
 		return nil
 	}
 	c.closing = true
-	c.closingAt = time.Now()
 	c.speaker.logger.InfoContext(ctx, "closing the session", "why", why)
 	return c.send(ctx, clientEvent{Type: "session.close"})
 }
 
-func (c *conversation) transcript(ctx context.Context, role, delta string, now time.Time) {
-	c.speaker.history.add(role, delta, now)
+func (c *conversation) transcript(ctx context.Context, role string, ev liveEvent, now time.Time) {
+	start := time.Duration(ev.StartMS) * time.Millisecond
+	c.said = append(c.said, speech{role: role, text: ev.Delta, start: start})
 	c.lastActivity = now
 	if c.line.role != role {
 		c.logLine(ctx)
-		c.line.role = role
+		c.line = speech{role: role, start: start}
 	}
-	c.line.text += delta
+	c.line.text += ev.Delta
 }
 
-// logLine prints one speaker's finished turn; fragments arrive in pieces and without turn events.
+// logLine prints one speaker's finished stretch; fragments arrive in pieces and without turn events.
 func (c *conversation) logLine(ctx context.Context) {
 	if text := strings.TrimSpace(c.line.text); text != "" {
 		who := "you"
 		if c.line.role == roleAssistant {
 			who = "assistant"
 		}
-		c.speaker.logger.InfoContext(ctx, who, "text", text)
+		c.speaker.logger.InfoContext(ctx, who, "at", c.line.start, "text", text)
 	}
-	c.line = message{}
+	c.line = speech{}
 }
 
 func (c *conversation) recordUsage(ev liveEvent) {
@@ -274,15 +351,28 @@ func (c *conversation) recordUsage(ev liveEvent) {
 	}
 }
 
+// endTalk logs the last turn, saves the conversation to history in the order it was said, and
+// takes the audio path stats while this conversation still owns them.
+func (c *conversation) endTalk(ctx context.Context) {
+	c.logLine(ctx)
+	// Stable, so fragments with the same start keep their arrival order.
+	slices.SortStableFunc(c.said, func(a, b speech) int { return cmp.Compare(a.start, b.start) })
+	now := time.Now()
+	for _, s := range c.said {
+		c.speaker.history.add(s.role, s.text, now)
+	}
+	c.playbackPeak = c.speaker.out.TakePeak()
+	c.droppedMic = c.speaker.dropped.Swap(0)
+}
+
 // finish logs what the session cost and how the audio path behaved.
 func (c *conversation) finish(ctx context.Context) {
-	c.logLine(ctx)
 	c.speaker.logger.InfoContext(ctx, "session usage",
 		"voice_seconds", c.seconds,
 		"voice_cost_usd", c.seconds/time.Minute.Seconds()*pricePerMinute,
 		// Output arriving faster than real time piles up here and delays interruptions.
-		"max_playback_queue", c.speaker.out.TakePeak(),
-		"dropped_mic_chunks", c.speaker.dropped.Swap(0),
+		"max_playback_queue", c.playbackPeak,
+		"dropped_mic_chunks", c.droppedMic,
 	)
 }
 

@@ -55,10 +55,15 @@ func (h *history) add(role, delta string, now time.Time) {
 	}
 }
 
+// forget drops the whole conversation.
+func (h *history) forget() {
+	h.messages = nil
+}
+
 // startInput returns the recent history as GPT-Live startup messages, forgetting it once stale.
 func (h *history) startInput(now time.Time) []inputMessage {
 	if now.Sub(h.updated) > h.ttl {
-		h.messages = nil
+		h.forget()
 	}
 	var input []inputMessage
 	chars := 0

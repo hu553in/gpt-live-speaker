@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 //go:embed wakeword.py pyproject.toml uv.lock
@@ -62,6 +63,8 @@ type Detector struct {
 	stdin io.WriteCloser
 	hits  chan struct{}
 	done  chan error
+	// paused stops audio from reaching the detector, so it cannot hear the wake word mid-conversation.
+	paused atomic.Bool
 }
 
 // Start installs the locked detector environment, which downloads it on the first run, then
@@ -128,9 +131,28 @@ func (d *Detector) Done() <-chan error {
 	return d.done
 }
 
-// Feed streams 16 kHz microphone audio to the detector until the process stops reading.
+// Pause stops feeding the detector, for example while a conversation runs.
+func (d *Detector) Pause() {
+	d.paused.Store(true)
+}
+
+// Resume drops detections that arrived while paused and feeds the detector again. The script
+// reports one hit per utterance, so the wake word that started the pause cannot fire twice.
+func (d *Detector) Resume() {
+	select {
+	case <-d.hits:
+	default:
+	}
+	d.paused.Store(false)
+}
+
+// Feed streams 16 kHz microphone audio to the detector until the process stops reading. Audio
+// captured while paused is dropped.
 func (d *Detector) Feed(mic <-chan []byte) {
 	for chunk := range mic {
+		if d.paused.Load() {
+			continue
+		}
 		if _, err := d.stdin.Write(chunk); err != nil {
 			// The process is gone; Done reports why. Keep draining so the capture queue never fills.
 			for range mic {

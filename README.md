@@ -15,9 +15,9 @@ daemon for a USB speakerphone, meant to run on a Raspberry Pi.
   speakerphone
 - Hands questions that need current facts or careful reasoning to a backend model through Responses
   delegation, with web search, and tells both models the current date, time, and location if set
-- Hangs up when you say goodbye, after a minute without speech, or after 10 minutes at most, and
+- Hangs up when you say goodbye, after a minute of inactivity, or after 10 minutes at most, and
   carries the conversation over to the next session for an hour; the timings are configurable
-- Logs each turn, the session's voice seconds and cost, and every wake word attempt's score
+- Logs each turn, the session's voice seconds and cost, and wake word candidate scores
 
 The speaker works in Russian: the prompts for both models, the assistant's speech, and the backend's
 answers. The voice prompt lets you ask it to switch languages during a conversation, but there is no
@@ -28,8 +28,9 @@ It has no timers, alarms, music, or device control yet, and says so when asked.
 
 > [!IMPORTANT]
 >
-> GPT-Live bills every second a session is open, including silence, at $0.05 per minute. The backend
-> model and web search are billed separately.
+> GPT-Live bills every second a session is open, including silence, at
+> [$0.05 per minute](https://developers.openai.com/api/docs/models/gpt-live-1). The backend model
+> and web search are billed separately.
 
 ## Requirements
 
@@ -59,6 +60,8 @@ work the same way, but none has been tested.
 
 ## Setup
 
+Run from a checkout:
+
 1. Copy `.env.example` to `.env` and set `OPENAI_API_KEY`.
 2. Connect the speakerphone over USB and set `AUDIO_DEVICE` to part of its name, such as `EMEET`.
 3. Run `make run`.
@@ -71,7 +74,7 @@ work the same way, but none has been tested.
 | `AUDIO_DEVICE`   | No       | system default | Part of the speakerphone's name, such as `EMEET`; the speaker lists the available names if nothing matches                       |
 | `WAKE_WORD`      | No       | `hey_jarvis`   | One of the pretrained wake words: `hey_jarvis`, `alexa`, `okay_nabu`, `hey_mycroft`                                              |
 | `WAKE_THRESHOLD` | No       | `0.5`          | Score between 0 and 1 above which the wake word counts; lower it if the speaker misses you, raise it if it wakes up on its own   |
-| `IDLE_TIMEOUT`   | No       | `1m`           | How long a session waits without speech before it closes                                                                         |
+| `IDLE_TIMEOUT`   | No       | `1m`           | Session inactivity limit; speech, replies, and backend events reset it                                                           |
 | `MAX_SESSION`    | No       | `10m`          | Hard limit for one session, so a TV that keeps talking cannot run up the bill                                                    |
 | `HISTORY_TTL`    | No       | `1h`           | How long the conversation carries over to the next session; `0` starts every session fresh                                       |
 | `BACKEND_MODEL`  | No       | `gpt-6-luna`   | Responses model for delegated questions, such as `gpt-6-sol` for harder tasks                                                    |
@@ -84,9 +87,9 @@ Durations use Go syntax, such as `90s` or `5m`.
 
 1. Wait for `listening` in the log. The first run downloads the wake word detector.
 2. Say the wake word, wait for the beep, and talk. Interrupt whenever you like.
-3. Say goodbye, such as "пока" or "всё, спасибо", to hang up right away, or just stop talking: the
-   session closes after `IDLE_TIMEOUT`. Either way the speaker listens for the wake word again.
-4. Press Ctrl+C to quit. A running session closes first, so it stops billing.
+3. Say goodbye, such as "пока" or "всё, спасибо", to hang up, or let the session go idle for
+   `IDLE_TIMEOUT`. Pending answer audio finishes before the speaker listens for the wake word again.
+4. Press Ctrl+C to quit. The speaker requests session closure before exiting.
 
 Each line of the conversation log has `at`, the moment it was said, counted from the start of the
 session. Your words are transcribed with a delay, so they can appear after the reply; `at` shows the
@@ -117,19 +120,22 @@ Requirements in addition to Go and uv:
 make install-deps
 prek install
 make check
+make check-fix
 ```
-
-Use `make check-fix` to apply formatting before running the same full gate.
 
 Focused checks:
 
 ```bash
 make lint
 make lint-fix
+make check-hooks
 make check-types
+make build
 make check-deps
 make check-vulns
 make test
+make check-renovate
+make check-workflows
 ```
 
 Build the binary into `dist/`:
@@ -139,4 +145,4 @@ make build
 ```
 
 The wake word detector is a small Python project in `internal/wakeword`, locked with `uv.lock`. The
-binary embeds it and unpacks it into the user cache directory, so a device needs only uv installed.
+binary unpacks it into the user cache directory; uv installs and runs the detector on the device.

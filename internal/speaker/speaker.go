@@ -57,7 +57,7 @@ func Run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
 		dropped:      &atomic.Int64{},
 		history:      history{ttl: cfg.HistoryTTL},
 	}
-	// Quitting waits for every close confirmation, so no session keeps billing after Ctrl+C.
+	// Wait for pending session-close attempts, including timeout and error paths, before quitting.
 	defer s.finalizing.Wait()
 	dev, err := audio.Open(cfg.AudioDevice, wakeMic, liveMic, s.out, s.dropped)
 	if err != nil {

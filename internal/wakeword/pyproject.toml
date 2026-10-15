@@ -3,7 +3,7 @@ name = "gpt-live-speaker-wakeword"
 version = "0.1.0"
 description = "Wake word detector that the GPT-Live speaker daemon runs as a child process."
 authors = [{ name = "Ruslan Khasanshin" }]
-requires-python = ">=3.14"
+requires-python = ">=3.15.0"
 
 dependencies = ["pymicro-wakeword>=2.5.0"]
 

@@ -3,7 +3,6 @@
 BUILD_DIR ?= ./dist
 WAKEWORD := internal/wakeword
 
-PRETTIER := bunx prettier -u
 ACTIONLINT := bunx github-actionlint
 TAPLO := bunx @taplo/cli
 PREK ?= prek
@@ -15,7 +14,7 @@ install-deps:
 
 .PHONY: lint
 lint: install-deps
-	$(PRETTIER) -c .
+	bun fmt --check
 	$(TAPLO) fmt --check
 	golangci-lint fmt --diff
 	golangci-lint run
@@ -24,7 +23,7 @@ lint: install-deps
 
 .PHONY: lint-fix
 lint-fix: install-deps
-	$(PRETTIER) -w .
+	bun fmt
 	$(TAPLO) fmt
 	golangci-lint fmt
 	golangci-lint run --fix

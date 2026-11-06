@@ -5,7 +5,7 @@ go 1.27.3
 tool golang.org/x/vuln/cmd/govulncheck
 
 require (
-	github.com/caarlos0/env/v11 v11.4.1
+	github.com/caarlos0/env/v11 v11.4.2
 	github.com/coder/websocket v1.8.15
 	github.com/gen2brain/malgo v0.11.27
 )

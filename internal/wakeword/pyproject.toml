@@ -16,7 +16,6 @@ dev = ["deptry>=0.25.1", "pysentry-rs>=0.5.0", "ruff>=0.17.6", "ty>=0.0.107"]
 [tool.uv]
 package = false
 link-mode = "copy"
-# Matches the Renovate minimumReleaseAge, so lockfile maintenance waits too.
 exclude-newer = "3 days"
 
 [tool.ruff]

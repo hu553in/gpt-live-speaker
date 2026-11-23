@@ -3,8 +3,8 @@
 BUILD_DIR ?= ./dist
 WAKEWORD := internal/wakeword
 
-ACTIONLINT := bunx github-actionlint
-TAPLO := bunx @taplo/cli
+ACTIONLINT := bunx --minimum-release-age 259200 github-actionlint
+TAPLO := bunx --minimum-release-age 259200 @taplo/cli
 PREK ?= prek
 
 .PHONY: install-deps
@@ -65,16 +65,12 @@ check-vulns: install-deps
 test: install-deps
 	go test -race ./...
 
-.PHONY: check-renovate
-check-renovate:
-	bunx --package renovate renovate-config-validator --strict --no-global renovate.json
-
 .PHONY: check-workflows
 check-workflows:
 	$(ACTIONLINT)
 
 .PHONY: check
-check: lint check-hooks check-types build check-deps check-vulns test check-renovate check-workflows
+check: lint check-hooks check-types build check-deps check-vulns test check-workflows
 
 .PHONY: check-fix
 check-fix: lint-fix

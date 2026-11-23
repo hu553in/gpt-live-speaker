@@ -134,7 +134,6 @@ make build
 make check-deps
 make check-vulns
 make test
-make check-renovate
 make check-workflows
 ```
 

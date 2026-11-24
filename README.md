@@ -62,7 +62,14 @@ work the same way, but none has been tested.
 
 Run from a checkout:
 
-1. Copy `.env.example` to `.env` and set `OPENAI_API_KEY`.
+1. Create `.env` if needed, then set `OPENAI_API_KEY`.
+
+   ```sh
+   if [ ! -e .env ] && [ ! -L .env ]; then
+     (umask 077 && cp .env.example .env)
+   fi
+   ```
+
 2. Connect the speakerphone over USB and set `AUDIO_DEVICE` to part of its name, such as `EMEET`.
 3. Run `make run`.
 
@@ -114,14 +121,13 @@ Requirements in addition to Go and uv:
 
 - Bun
 - golangci-lint v2
-- [prek](https://prek.j178.dev/)
 
 ```bash
-make install-deps
-prek install
+bunx lefthook install
 make check
-make check-fix
 ```
+
+Run `make check-fix` to apply automatic fixes and then run the checks.
 
 Focused checks:
 
@@ -136,6 +142,9 @@ make check-vulns
 make test
 make check-workflows
 ```
+
+When `say` and `uv` are available, `make test` also runs a wake-word smoke test. Its first run may
+download the detector.
 
 Build the binary into `dist/`:
 

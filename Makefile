@@ -4,8 +4,6 @@ BUILD_DIR ?= ./dist
 WAKEWORD := internal/wakeword
 
 ACTIONLINT := bunx --minimum-release-age 259200 github-actionlint
-TAPLO := bunx --minimum-release-age 259200 @taplo/cli
-PREK ?= prek
 
 .PHONY: install-deps
 install-deps:
@@ -15,7 +13,6 @@ install-deps:
 .PHONY: lint
 lint: install-deps
 	bun fmt --check
-	$(TAPLO) fmt --check
 	golangci-lint fmt --diff
 	golangci-lint run
 	uv run --locked --directory "$(WAKEWORD)" ruff check
@@ -24,7 +21,6 @@ lint: install-deps
 .PHONY: lint-fix
 lint-fix: install-deps
 	bun fmt
-	$(TAPLO) fmt
 	golangci-lint fmt
 	golangci-lint run --fix
 	uv run --locked --directory "$(WAKEWORD)" ruff check --fix
@@ -32,20 +28,16 @@ lint-fix: install-deps
 
 .PHONY: check-hooks
 check-hooks:
-	$(PREK) validate-config prek.toml
+	bunx --minimum-release-age 259200 lefthook validate
 
 .PHONY: check-types
-check-types: install-deps
+check-types:
 	uv run --locked --directory "$(WAKEWORD)" ty check
-
-.PHONY: ensure-build-dir
-ensure-build-dir:
-	mkdir -p -- "$(BUILD_DIR)"
 
 # malgo binds the system audio APIs through cgo.
 
 .PHONY: build
-build: ensure-build-dir install-deps
+build:
 	CGO_ENABLED=1 GOFLAGS="-buildvcs=false" \
 	go build -trimpath -ldflags="-s -w" -o "$(BUILD_DIR)/gpt-live-speaker" ./cmd/gpt-live-speaker
 
@@ -53,7 +45,6 @@ build: ensure-build-dir install-deps
 check-deps: install-deps
 	go mod tidy -diff
 	go mod verify
-	uv lock --directory "$(WAKEWORD)" --check
 	uv run --locked --directory "$(WAKEWORD)" deptry .
 
 .PHONY: check-vulns
@@ -62,7 +53,7 @@ check-vulns: install-deps
 	uv run --locked --directory "$(WAKEWORD)" pysentry-rs .
 
 .PHONY: test
-test: install-deps
+test:
 	go test -race ./...
 
 .PHONY: check-workflows
@@ -82,4 +73,4 @@ run:
 
 .PHONY: clean
 clean:
-	rm -rf -- "$(BUILD_DIR)"
+	test -z "$(BUILD_DIR)" || rm -f -- "$(BUILD_DIR)/gpt-live-speaker"
